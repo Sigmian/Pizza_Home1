@@ -27,7 +27,7 @@ async function generateOrderNumber(): Promise<string> {
   const db = await getDb();
   if (!db) return `PH-${Date.now()}`;
   const result = await db.select({ cnt: count() }).from(orders);
-  const num = (result[0]?.cnt ?? 0) + 1;
+  const num = (Number(result[0]?.cnt) ?? 0) + 1;
   return `PH-${String(num).padStart(4, "0")}`;
 }
 
@@ -103,7 +103,7 @@ export function registerApiRoutes(app: Express) {
           }
           return null;
         })(),
-        price: item.price ? Number(item.price) : null,
+        price: item.price ? String(item.price) : null,
       }));
 
       res.json(parsedItems);
@@ -126,7 +126,7 @@ export function registerApiRoutes(app: Express) {
       const parsedDeals = d.map((deal: any) => ({
         ...deal,
         items: typeof deal.items === "string" ? JSON.parse(deal.items) : deal.items,
-        price: Number(deal.price),
+        price: String(deal.price),
       }));
 
       res.json(parsedDeals);
@@ -159,10 +159,9 @@ export function registerApiRoutes(app: Express) {
           total: String(total),
           subtotal: String(subtotal),
           discount: String(discount || 0),
-          paymentMethod,
+          paymentMethod: paymentMethod || "cod",
           paymentStatus: "pending",
           status: "pending",
-          couponCode,
         })
         .returning();
 
@@ -173,8 +172,9 @@ export function registerApiRoutes(app: Express) {
           menuItemId: item.id,
           name: item.name,
           quantity: item.quantity,
-          price: String(item.price),
-          customization: item.customization ? JSON.stringify(item.customization) : null,
+          unitPrice: String(item.price),
+          totalPrice: String(item.price * item.quantity),
+          size: item.size || null,
         });
       }
 
@@ -182,7 +182,7 @@ export function registerApiRoutes(app: Express) {
       await db.insert(orderStatusHistory).values({
         orderId: newOrder.id,
         status: "pending",
-        notes: "Order placed",
+        note: "Order placed",
       });
 
       emitNewOrder(newOrder);
@@ -244,7 +244,7 @@ export function registerApiRoutes(app: Express) {
       const db = await getDb();
       if (!db) throw new Error("Database not connected");
 
-      const { status, notes } = req.body;
+      const { status, note } = req.body;
       const orderId = parseInt(req.params.id);
 
       await db.update(orders).set({ status }).where(eq(orders.id, orderId));
@@ -252,10 +252,13 @@ export function registerApiRoutes(app: Express) {
       await db.insert(orderStatusHistory).values({
         orderId,
         status,
-        notes: notes || `Status updated to ${status}`,
+        note: note || `Status updated to ${status}`,
       });
 
-      emitOrderStatusUpdate(orderId, status);
+      const [updatedOrder] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+      if (updatedOrder) {
+        emitOrderStatusUpdate(updatedOrder);
+      }
 
       res.json({ success: true });
     } catch (err) {
@@ -271,10 +274,9 @@ export function registerApiRoutes(app: Express) {
       const totalOrders = await db.select({ val: count() }).from(orders);
       const totalRevenue = await db.select({ val: sum(orders.total) }).from(orders);
       
-      // Simplified analytics
       res.json({
-        totalOrders: totalOrders[0]?.val || 0,
-        totalRevenue: totalRevenue[0]?.val || 0,
+        totalOrders: Number(totalOrders[0]?.val) || 0,
+        totalRevenue: Number(totalRevenue[0]?.val) || 0,
         recentOrders: 10, 
       });
     } catch (err) {
