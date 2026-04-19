@@ -84,13 +84,17 @@ export default function OrderTracking() {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(`/api/orders/${searchOrderNumber}`);
+        const res = await fetch(`/api/orders/track/${searchOrderNumber}`);
         if (!res.ok) {
           if (res.status === 404) throw new Error("Order not found");
           throw new Error("Failed to fetch order");
         }
         const data = await res.json();
-        setOrder(data);
+        // Backend returns { order, items, history }
+        setOrder({
+          ...data.order,
+          items: data.items || []
+        });
       } catch (err: any) {
         setError(err.message);
         setOrder(null);
@@ -110,7 +114,8 @@ export default function OrderTracking() {
     });
 
     socket.on("order_status_updated", (data: any) => {
-      if (data.orderNumber === searchOrderNumber) {
+      // data might be the updated order object
+      if (data.orderNumber === searchOrderNumber || data.id === order?.id) {
         fetchOrder();
       }
     });
@@ -122,7 +127,7 @@ export default function OrderTracking() {
       socket.disconnect();
       clearInterval(interval);
     };
-  }, [searchOrderNumber]);
+  }, [searchOrderNumber, order?.id]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -162,7 +167,7 @@ export default function OrderTracking() {
               type="text"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value.toUpperCase())}
-              placeholder="Enter order number (e.g. PH-ABC123)"
+              placeholder="Enter order number (e.g. PH-0001)"
               className="flex-1 px-4 py-3 rounded-xl bg-white/5 border border-white/5 text-white placeholder:text-white/25 focus:outline-none focus:border-red-500/30"
             />
             <button

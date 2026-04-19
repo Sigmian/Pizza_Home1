@@ -56,15 +56,14 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-  // 🔥 UPLOAD ROUTE (NEW)
-   app.post("/api/upload", upload.single("image"), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "No file uploaded" });
-  }
-
-  const filePath = `/uploads/${req.file.filename}`;
-  res.json({ url: filePath });
-});
+  // 🔥 UPLOAD ROUTE
+  app.post("/api/upload", upload.single("image"), (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+    const filePath = `/uploads/${req.file.filename}`;
+    res.json({ url: filePath });
+  });
 
   // OAuth
   registerOAuthRoutes(app);
@@ -83,15 +82,6 @@ async function startServer() {
 
   // REST API
   registerApiRoutes(app);
-
-app.post("/api/upload", upload.single("image"), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "No file uploaded" });
-  }
-
-  const filePath = `/uploads/${req.file.filename}`;
-  res.json({ url: filePath });
-});
 
   // Frontend
   if (process.env.NODE_ENV === "development") {

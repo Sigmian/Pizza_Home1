@@ -46,7 +46,7 @@ export function registerApiRoutes(app: Express) {
 
     const pinMap: Record<string, string> = {
       admin: ADMIN_PIN,
-      pos: ADMIN_PIN, // POS uses admin PIN
+      pos: ADMIN_PIN,
       kitchen: KITCHEN_PIN,
       rider: RIDER_PIN,
     };
@@ -73,7 +73,6 @@ export function registerApiRoutes(app: Express) {
         .orderBy(menuCategories.sortOrder);
       res.json(cats);
     } catch (err) {
-      console.error("[API] GET /api/menu/categories error:", err);
       res.status(500).json({ error: "Failed to fetch categories" });
     }
   });
@@ -82,7 +81,6 @@ export function registerApiRoutes(app: Express) {
     try {
       const db = await getDb();
       if (!db) return res.json([]);
-
       const items = await db
         .select()
         .from(menuItems)
@@ -91,24 +89,11 @@ export function registerApiRoutes(app: Express) {
 
       const parsedItems = items.map((item: any) => ({
         ...item,
-        sizeVariants: (() => {
-          if (!item.sizeVariants) return null;
-          if (typeof item.sizeVariants === "object") return item.sizeVariants;
-          if (typeof item.sizeVariants === "string") {
-            try {
-              return JSON.parse(item.sizeVariants);
-            } catch {
-              return null;
-            }
-          }
-          return null;
-        })(),
+        sizeVariants: typeof item.sizeVariants === "string" ? JSON.parse(item.sizeVariants) : item.sizeVariants,
         price: item.price ? String(item.price) : null,
       }));
-
       res.json(parsedItems);
     } catch (err) {
-      console.error("[API] GET /api/menu/items error:", err);
       res.status(500).json({ error: "Failed to fetch menu items" });
     }
   });
@@ -117,27 +102,20 @@ export function registerApiRoutes(app: Express) {
     try {
       const db = await getDb();
       if (!db) return res.json([]);
-      const d = await db
-        .select()
-        .from(deals)
-        .where(eq(deals.isActive, true))
-        .orderBy(deals.id);
-
+      const d = await db.select().from(deals).where(eq(deals.isActive, true));
       const parsedDeals = d.map((deal: any) => ({
         ...deal,
         items: typeof deal.items === "string" ? JSON.parse(deal.items) : deal.items,
         price: String(deal.price),
       }));
-
       res.json(parsedDeals);
     } catch (err) {
-      console.error("[API] GET /api/menu/deals error:", err);
       res.status(500).json({ error: "Failed to fetch deals" });
     }
   });
 
   // ═══════════════════════════════════════════════════════════════════
-  // ORDERS
+  // ORDERS (Supports Online & POS)
   // ═══════════════════════════════════════════════════════════════════
 
   app.post("/api/orders", async (req: Request, res: Response) => {
@@ -145,7 +123,12 @@ export function registerApiRoutes(app: Express) {
       const db = await getDb();
       if (!db) throw new Error("Database not connected");
 
-      const { customer, items, total, subtotal, discount, paymentMethod, couponCode } = req.body;
+      // Handle both nested 'customer' object (Web) and flat fields (POS)
+      const { 
+        customer, 
+        customerName, customerPhone, customerAddress, 
+        items, total, subtotal, discount, paymentMethod, orderType, notes 
+      } = req.body;
 
       const orderNumber = await generateOrderNumber();
 
@@ -153,32 +136,32 @@ export function registerApiRoutes(app: Express) {
         .insert(orders)
         .values({
           orderNumber,
-          customerName: customer.name,
-          customerPhone: customer.phone,
-          customerAddress: customer.address,
-          total: String(total),
-          subtotal: String(subtotal),
+          customerName: customer?.name || customerName,
+          customerPhone: customer?.phone || customerPhone,
+          customerAddress: customer?.address || customerAddress,
+          total: String(total || 0),
+          subtotal: String(subtotal || total || 0),
           discount: String(discount || 0),
           paymentMethod: paymentMethod || "cod",
-          paymentStatus: "pending",
+          orderType: orderType || "online",
           status: "pending",
+          notes: notes || customer?.notes || "",
         })
         .returning();
 
-      // Insert items
       for (const item of items) {
         await db.insert(orderItems).values({
           orderId: newOrder.id,
-          menuItemId: item.id,
+          menuItemId: item.menuItemId || item.id || null,
+          dealId: item.dealId || null,
           name: item.name,
           quantity: item.quantity,
           unitPrice: String(item.price),
-          totalPrice: String(item.price * item.quantity),
+          totalPrice: String(Number(item.price) * item.quantity),
           size: item.size || null,
         });
       }
 
-      // Initial status history
       await db.insert(orderStatusHistory).values({
         orderId: newOrder.id,
         status: "pending",
@@ -186,7 +169,6 @@ export function registerApiRoutes(app: Express) {
       });
 
       emitNewOrder(newOrder);
-
       res.json({ success: true, order: newOrder });
     } catch (err) {
       console.error("[API] POST /api/orders error:", err);
@@ -194,29 +176,17 @@ export function registerApiRoutes(app: Express) {
     }
   });
 
+  // Customer Tracking
   app.get("/api/orders/track/:orderNumber", async (req: Request, res: Response) => {
     try {
       const db = await getDb();
       if (!db) throw new Error("Database not connected");
 
-      const [order] = await db
-        .select()
-        .from(orders)
-        .where(eq(orders.orderNumber, req.params.orderNumber))
-        .limit(1);
-
+      const [order] = await db.select().from(orders).where(eq(orders.orderNumber, req.params.orderNumber)).limit(1);
       if (!order) return res.status(404).json({ error: "Order not found" });
 
-      const items = await db
-        .select()
-        .from(orderItems)
-        .where(eq(orderItems.orderId, order.id));
-
-      const history = await db
-        .select()
-        .from(orderStatusHistory)
-        .where(eq(orderStatusHistory.orderId, order.id))
-        .orderBy(desc(orderStatusHistory.createdAt));
+      const items = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
+      const history = await db.select().from(orderStatusHistory).where(eq(orderStatusHistory.orderId, order.id)).orderBy(desc(orderStatusHistory.createdAt));
 
       res.json({ order, items, history });
     } catch (err) {
@@ -224,8 +194,21 @@ export function registerApiRoutes(app: Express) {
     }
   });
 
+  // Compatibility route for older frontend calls
+  app.get("/api/orders/:orderNumber", async (req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) throw new Error("Database not connected");
+      const [order] = await db.select().from(orders).where(eq(orders.orderNumber, req.params.orderNumber)).limit(1);
+      if (!order) return res.status(404).json({ error: "Order not found" });
+      res.json(order);
+    } catch (err) {
+      res.status(500).json({ error: "Error fetching order" });
+    }
+  });
+
   // ═══════════════════════════════════════════════════════════════════
-  // ADMIN & KITCHEN & RIDER
+  // ADMIN & RIDERS
   // ═══════════════════════════════════════════════════════════════════
 
   app.get("/api/admin/orders", async (_req: Request, res: Response) => {
@@ -233,9 +216,48 @@ export function registerApiRoutes(app: Express) {
       const db = await getDb();
       if (!db) return res.json([]);
       const allOrders = await db.select().from(orders).orderBy(desc(orders.createdAt));
-      res.json(allOrders);
+      
+      // Attach items to each order for AdminPanel/AdminOrders
+      const enriched = await Promise.all(allOrders.map(async (o) => {
+        const items = await db.select().from(orderItems).where(eq(orderItems.orderId, o.id));
+        return { ...o, items };
+      }));
+      
+      res.json(enriched);
     } catch (err) {
       res.status(500).json({ error: "Failed to fetch orders" });
+    }
+  });
+
+  app.get("/api/admin/riders", async (_req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) return res.json([]);
+      const riders = await db.select().from(users).where(eq(users.role, "rider"));
+      res.json(riders);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch riders" });
+    }
+  });
+
+  app.patch("/api/admin/orders/:id/assign-rider", async (req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) throw new Error("Database not connected");
+      const { riderId } = req.body;
+      const orderId = parseInt(req.params.id);
+
+      await db.update(orders).set({ riderId, status: "out_for_delivery" }).where(eq(orders.id, orderId));
+      await db.insert(orderStatusHistory).values({ orderId, status: "out_for_delivery", note: "Rider assigned" });
+
+      const [updated] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+      if (updated) {
+        emitRiderAssignment(riderId, updated);
+        emitOrderStatusUpdate(updated);
+      }
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to assign rider" });
     }
   });
 
@@ -243,61 +265,51 @@ export function registerApiRoutes(app: Express) {
     try {
       const db = await getDb();
       if (!db) throw new Error("Database not connected");
-
       const { status, note } = req.body;
       const orderId = parseInt(req.params.id);
 
       await db.update(orders).set({ status }).where(eq(orders.id, orderId));
+      await db.insert(orderStatusHistory).values({ orderId, status, note: note || `Status: ${status}` });
 
-      await db.insert(orderStatusHistory).values({
-        orderId,
-        status,
-        note: note || `Status updated to ${status}`,
-      });
-
-      const [updatedOrder] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
-      if (updatedOrder) {
-        emitOrderStatusUpdate(updatedOrder);
-      }
-
+      const [updated] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+      if (updated) emitOrderStatusUpdate(updated);
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: "Failed to update status" });
     }
   });
 
-  app.get("/api/admin/analytics", async (_req: Request, res: Response) => {
-    try {
-      const db = await getDb();
-      if (!db) return res.json({});
+  // ═══════════════════════════════════════════════════════════════════
+  // RIDER ENDPOINTS
+  // ═══════════════════════════════════════════════════════════════════
 
-      const totalOrders = await db.select({ val: count() }).from(orders);
-      const totalRevenue = await db.select({ val: sum(orders.total) }).from(orders);
-      
-      res.json({
-        totalOrders: Number(totalOrders[0]?.val) || 0,
-        totalRevenue: Number(totalRevenue[0]?.val) || 0,
-        recentOrders: 10, 
-      });
-    } catch (err) {
-      res.status(500).json({ error: "Failed to fetch analytics" });
-    }
-  });
-
-  app.get("/api/rider/orders", async (_req: Request, res: Response) => {
+  app.get("/api/rider/:riderId/orders", async (req: Request, res: Response) => {
     try {
       const db = await getDb();
       if (!db) return res.json([]);
-      const riderOrders = await db
-        .select()
-        .from(orders)
-        .where(
-          sql`${orders.status} IN ('ready', 'out_for_delivery', 'delivered')`
-        )
-        .orderBy(desc(orders.createdAt));
+      const riderId = parseInt(req.params.riderId);
+      const riderOrders = await db.select().from(orders).where(eq(orders.riderId, riderId)).orderBy(desc(orders.createdAt));
       res.json(riderOrders);
     } catch (err) {
       res.status(500).json({ error: "Failed to fetch rider orders" });
+    }
+  });
+
+  app.patch("/api/rider/orders/:id/status", async (req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) throw new Error("Database not connected");
+      const { status, note } = req.body;
+      const orderId = parseInt(req.params.id);
+
+      await db.update(orders).set({ status }).where(eq(orders.id, orderId));
+      await db.insert(orderStatusHistory).values({ orderId, status, note: note || `Rider update: ${status}` });
+
+      const [updated] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+      if (updated) emitOrderStatusUpdate(updated);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update rider order status" });
     }
   });
 }
