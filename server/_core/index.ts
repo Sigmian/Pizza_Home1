@@ -1,5 +1,6 @@
 import multer from "multer";
 import path from "path";
+import fs from "fs";
 import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
@@ -33,6 +34,12 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 
 async function startServer() {
   const app = express();
+
+  // Ensure uploads directory exists
+  const uploadDir = path.resolve(process.cwd(), "public/uploads");
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
 
   // 🔥 MULTER CONFIG (UPLOAD SYSTEM)
   const storage = multer.diskStorage({

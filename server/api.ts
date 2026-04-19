@@ -107,6 +107,7 @@ export function registerApiRoutes(app: Express) {
         ...deal,
         items: typeof deal.items === "string" ? JSON.parse(deal.items) : deal.items,
         price: String(deal.price),
+        originalPrice: deal.originalPrice ? String(deal.originalPrice) : null,
       }));
       res.json(parsedDeals);
     } catch (err) {
@@ -188,7 +189,15 @@ export function registerApiRoutes(app: Express) {
       const items = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
       const history = await db.select().from(orderStatusHistory).where(eq(orderStatusHistory.orderId, order.id)).orderBy(desc(orderStatusHistory.createdAt));
 
-      res.json({ order, items, history });
+      const enrichedOrder = {
+        ...order,
+        total: String(order.total),
+        subtotal: String(order.subtotal),
+        deliveryFee: String(order.deliveryFee),
+        discount: String(order.discount),
+      };
+
+      res.json({ order: enrichedOrder, items, history });
     } catch (err) {
       res.status(500).json({ error: "Failed to track order" });
     }
@@ -201,7 +210,16 @@ export function registerApiRoutes(app: Express) {
       if (!db) throw new Error("Database not connected");
       const [order] = await db.select().from(orders).where(eq(orders.orderNumber, req.params.orderNumber)).limit(1);
       if (!order) return res.status(404).json({ error: "Order not found" });
-      res.json(order);
+      
+      const enrichedOrder = {
+        ...order,
+        total: String(order.total),
+        subtotal: String(order.subtotal),
+        deliveryFee: String(order.deliveryFee),
+        discount: String(order.discount),
+      };
+      
+      res.json(enrichedOrder);
     } catch (err) {
       res.status(500).json({ error: "Error fetching order" });
     }
@@ -220,7 +238,14 @@ export function registerApiRoutes(app: Express) {
       // Attach items to each order for AdminPanel/AdminOrders
       const enriched = await Promise.all(allOrders.map(async (o) => {
         const items = await db.select().from(orderItems).where(eq(orderItems.orderId, o.id));
-        return { ...o, items };
+        return { 
+          ...o, 
+          items,
+          total: String(o.total),
+          subtotal: String(o.subtotal),
+          deliveryFee: String(o.deliveryFee),
+          discount: String(o.discount),
+        };
       }));
       
       res.json(enriched);
