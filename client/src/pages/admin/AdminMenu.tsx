@@ -22,7 +22,7 @@ interface MenuItem {
   categoryId: number;
   name: string;
   description: string | null;
-  price: string | null;
+  price: string | number | null;
   sizeVariants: string | null;
   image: string | null;
   isActive: boolean;
@@ -50,10 +50,12 @@ export default function AdminMenu() {
         fetch("/api/admin/menu-items"),
         fetch("/api/menu/categories"),
       ]);
+      if (!itemsRes.ok || !catsRes.ok) throw new Error("Failed to fetch data");
       setItems(await itemsRes.json());
       setCategories(await catsRes.json());
     } catch (err) {
       console.error(err);
+      toast.error("Failed to load menu data");
     } finally {
       setLoading(false);
     }
@@ -65,11 +67,12 @@ export default function AdminMenu() {
 
   const toggleActive = async (item: MenuItem) => {
     try {
-      await fetch(`/api/admin/menu-items/${item.id}`, {
+      const res = await fetch(`/api/admin/menu-items/${item.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ isActive: !item.isActive }),
       });
+      if (!res.ok) throw new Error();
       toast.success(`${item.name} ${item.isActive ? "deactivated" : "activated"}`);
       fetchItems();
     } catch {
@@ -78,10 +81,11 @@ export default function AdminMenu() {
   };
 
   const deleteItem = async (item: MenuItem) => {
-    if (!confirm(`Deactivate "${item.name}"?`)) return;
+    if (!confirm(`Are you sure you want to delete "${item.name}"?`)) return;
     try {
-      await fetch(`/api/admin/menu-items/${item.id}`, { method: "DELETE" });
-      toast.success("Item deactivated");
+      const res = await fetch(`/api/admin/menu-items/${item.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error();
+      toast.success("Item deleted");
       fetchItems();
     } catch {
       toast.error("Failed to delete item");
@@ -147,7 +151,7 @@ export default function AdminMenu() {
           let priceDisplay = "";
           if (item.sizeVariants) {
             try {
-              const sv = JSON.parse(item.sizeVariants);
+              const sv = typeof item.sizeVariants === 'string' ? JSON.parse(item.sizeVariants) : item.sizeVariants;
               if (Array.isArray(sv) && sv.length > 0) {
                 priceDisplay = `Rs. ${sv[0].price} - ${sv[sv.length - 1].price}`;
               }
@@ -270,7 +274,7 @@ function MenuItemForm({
   useEffect(() => {
     if (item?.sizeVariants) {
       try {
-        const sv = JSON.parse(item.sizeVariants);
+        const sv = typeof item.sizeVariants === 'string' ? JSON.parse(item.sizeVariants) : item.sizeVariants;
         if (Array.isArray(sv) && sv.length > 0) {
           setForm((f) => ({ ...f, hasSizeVariants: true, sizeVariants: sv }));
         }
@@ -292,25 +296,19 @@ function MenuItemForm({
       };
 
       if (form.hasSizeVariants && form.sizeVariants.length > 0) {
-  body.sizeVariants = form.sizeVariants
-    .filter((sv) => sv.size && sv.price !== null)
-    .map((sv) => ({
-      size: String(sv.size).trim(),
-      price: Number(sv.price) || 0,
-    }));
-
-  body.price = null;
-} else {
-        body.price =
-  form.price === "" || form.price === null
-    ? null
-    : Number(form.price);
+        body.sizeVariants = form.sizeVariants
+          .filter((sv) => sv.size && sv.price !== null)
+          .map((sv) => ({
+            size: String(sv.size).trim(),
+            price: Number(sv.price) || 0,
+          }));
+        body.price = null;
+      } else {
+        body.price = form.price === "" || form.price === null ? null : Number(form.price);
         body.sizeVariants = null;
       }
 
-      const url = item
-        ? `/api/admin/menu-items/${item.id}`
-        : "/api/admin/menu-items";
+      const url = item ? `/api/admin/menu-items/${item.id}` : "/api/admin/menu-items";
       const method = item ? "PUT" : "POST";
 
       const res = await fetch(url, {
@@ -391,87 +389,74 @@ function MenuItemForm({
           </div>
 
           {form.hasSizeVariants ? (
-  <div className="flex flex-col gap-2">
-    {form.sizeVariants.map((sv, i) => (
-      <div key={i} className="flex gap-2">
-        <input
-          value={sv.size}
-          onChange={(e) => {
-            const arr = [...form.sizeVariants];
-            arr[i] = { ...arr[i], size: e.target.value };
-            setForm({ ...form, sizeVariants: arr });
-          }}
-          placeholder="Size (e.g. Small)"
-          className="flex-1 px-3 py-2 rounded-lg bg-white/5 border border-white/5 text-white text-sm"
-        />
-
-        <input
-          type="number"
-          value={sv.price}
-          onChange={(e) => {
-            const arr = [...form.sizeVariants];
-            arr[i] = {
-              ...arr[i],
-              price: e.target.value === "" ? 0 : Number(e.target.value),
-            };
-            setForm({ ...form, sizeVariants: arr });
-          }}
-          placeholder="Price"
-          className="w-28 px-3 py-2 rounded-lg bg-white/5 border border-white/5 text-white text-sm"
-        />
-
-        <button
-          type="button"
-          onClick={() => {
-            const arr = form.sizeVariants.filter((_, j) => j !== i);
-            setForm({ ...form, sizeVariants: arr });
-          }}
-          className="p-2 rounded-lg bg-red-500/10 hover:bg-red-500/20"
-        >
-          <X className="w-3 h-3 text-red-400" />
-        </button>
-      </div>
-    ))}
-
-    <button
-      type="button"
-      onClick={() =>
-        setForm({
-          ...form,
-          sizeVariants: [...form.sizeVariants, { size: "Small", price: 0 }],
-        })
-      }
-      className="text-xs text-red-400 hover:text-red-300"
-    >
-      + Add Size
-    </button>
-  </div>
-) : (
-  <div>
-    <label className="text-xs text-white/40 mb-1 block">Price (Rs.)</label>
-    <input
-      type="number"
-      value={form.price}
-      onChange={(e) =>
-        setForm({
-          ...form,
-          price: e.target.value === "" ? "" : Number(e.target.value),
-        })
-      }
-      className="w-full px-3 py-2.5 rounded-xl bg-white/5 border border-white/5 text-white text-sm focus:outline-none focus:border-red-500/30"
-    />
-  </div>
-)}
+            <div className="flex flex-col gap-2">
+              {form.sizeVariants.map((sv, i) => (
+                <div key={i} className="flex gap-2">
+                  <input
+                    value={sv.size}
+                    onChange={(e) => {
+                      const arr = [...form.sizeVariants];
+                      arr[i] = { ...arr[i], size: e.target.value };
+                      setForm({ ...form, sizeVariants: arr });
+                    }}
+                    placeholder="Size (e.g. Small)"
+                    className="flex-1 px-3 py-2 rounded-lg bg-white/5 border border-white/5 text-white text-sm"
+                  />
+                  <input
+                    type="number"
+                    value={sv.price}
+                    onChange={(e) => {
+                      const arr = [...form.sizeVariants];
+                      arr[i] = {
+                        ...arr[i],
+                        price: e.target.value === "" ? 0 : Number(e.target.value),
+                      };
+                      setForm({ ...form, sizeVariants: arr });
+                    }}
+                    placeholder="Price"
+                    className="w-28 px-3 py-2 rounded-lg bg-white/5 border border-white/5 text-white text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const arr = form.sizeVariants.filter((_, j) => j !== i);
+                      setForm({ ...form, sizeVariants: arr });
+                    }}
+                    className="p-2 rounded-lg bg-red-500/10 hover:bg-red-500/20"
+                  >
+                    <X className="w-3 h-3 text-red-400" />
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() =>
+                  setForm({
+                    ...form,
+                    sizeVariants: [...form.sizeVariants, { size: "Small", price: 0 }],
+                  })
+                }
+                className="text-xs text-red-400 hover:text-red-300 text-left"
+              >
+                + Add Size
+              </button>
+            </div>
+          ) : (
             <div>
               <label className="text-xs text-white/40 mb-1 block">Price (Rs.)</label>
               <input
                 type="number"
                 value={form.price}
-               
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    price: e.target.value === "" ? "" : Number(e.target.value),
+                  })
+                }
                 className="w-full px-3 py-2.5 rounded-xl bg-white/5 border border-white/5 text-white text-sm focus:outline-none focus:border-red-500/30"
               />
             </div>
-          )
+          )}
 
           <div>
             <label className="text-xs text-white/40 mb-1 block">Image</label>
