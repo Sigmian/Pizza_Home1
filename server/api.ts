@@ -144,7 +144,7 @@ export function registerApiRoutes(app: Express) {
           subtotal: String(subtotal || total || 0),
           discount: String(discount || 0),
           paymentMethod: paymentMethod || "cod",
-          orderType: orderType || "online",
+          orderType: orderType === "pos" ? "pos" : "online",
           status: "pending",
           notes: notes || customer?.notes || "",
         })
@@ -226,6 +226,50 @@ export function registerApiRoutes(app: Express) {
   });
 
   // ═══════════════════════════════════════════════════════════════════
+  // KITCHEN ENDPOINTS
+  // ═══════════════════════════════════════════════════════════════════
+
+  app.get("/api/kitchen/orders", async (_req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) return res.json([]);
+      const kitchenOrders = await db
+        .select()
+        .from(orders)
+        .where(sql`${orders.status} IN ('pending', 'confirmed', 'preparing', 'ready')`)
+        .orderBy(desc(orders.createdAt));
+
+      const enriched = await Promise.all(
+        kitchenOrders.map(async (o) => {
+          const items = await db.select().from(orderItems).where(eq(orderItems.orderId, o.id));
+          return { ...o, items };
+        })
+      );
+      res.json(enriched);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch kitchen orders" });
+    }
+  });
+
+  app.patch("/api/kitchen/orders/:id/status", async (req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) throw new Error("Database not connected");
+      const { status } = req.body;
+      const orderId = parseInt(req.params.id);
+
+      await db.update(orders).set({ status }).where(eq(orders.id, orderId));
+      await db.insert(orderStatusHistory).values({ orderId, status, note: `Kitchen: ${status}` });
+
+      const [updated] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+      if (updated) emitOrderStatusUpdate(updated);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update kitchen order status" });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
   // ADMIN & RIDERS
   // ═══════════════════════════════════════════════════════════════════
 
@@ -265,6 +309,51 @@ export function registerApiRoutes(app: Express) {
     }
   });
 
+  app.post("/api/admin/riders", async (req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) throw new Error("Database not connected");
+      const { name, phone, email } = req.body;
+      const openId = `rider-${nanoid(8)}`;
+      await db.insert(users).values({
+        openId,
+        name,
+        phone,
+        email,
+        role: "rider",
+        isActive: true,
+      });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to create rider" });
+    }
+  });
+
+  app.put("/api/admin/riders/:id", async (req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) throw new Error("Database not connected");
+      const id = parseInt(req.params.id);
+      const updateData = req.body;
+      await db.update(users).set(updateData).where(and(eq(users.id, id), eq(users.role, "rider")));
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update rider" });
+    }
+  });
+
+  app.delete("/api/admin/riders/:id", async (req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) throw new Error("Database not connected");
+      const id = parseInt(req.params.id);
+      await db.delete(users).where(and(eq(users.id, id), eq(users.role, "rider")));
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to delete rider" });
+    }
+  });
+
   app.patch("/api/admin/orders/:id/assign-rider", async (req: Request, res: Response) => {
     try {
       const db = await getDb();
@@ -301,6 +390,166 @@ export function registerApiRoutes(app: Express) {
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: "Failed to update status" });
+    }
+  });
+
+  // Admin Menu CRUD
+  app.get("/api/admin/menu-items", async (_req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) return res.json([]);
+      const items = await db.select().from(menuItems).orderBy(desc(menuItems.createdAt));
+      res.json(items);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch menu items" });
+    }
+  });
+
+  app.post("/api/admin/menu-items", async (req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) throw new Error("Database not connected");
+      const data = req.body;
+      if (data.sizeVariants) data.sizeVariants = JSON.stringify(data.sizeVariants);
+      await db.insert(menuItems).values(data);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to create menu item" });
+    }
+  });
+
+  app.put("/api/admin/menu-items/:id", async (req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) throw new Error("Database not connected");
+      const id = parseInt(req.params.id);
+      const data = req.body;
+      if (data.sizeVariants) data.sizeVariants = JSON.stringify(data.sizeVariants);
+      await db.update(menuItems).set(data).where(eq(menuItems.id, id));
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update menu item" });
+    }
+  });
+
+  app.delete("/api/admin/menu-items/:id", async (req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) throw new Error("Database not connected");
+      const id = parseInt(req.params.id);
+      await db.delete(menuItems).where(eq(menuItems.id, id));
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to delete menu item" });
+    }
+  });
+
+  // Admin Deals CRUD
+  app.get("/api/admin/deals", async (_req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) return res.json([]);
+      const d = await db.select().from(deals).orderBy(desc(deals.createdAt));
+      res.json(d);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch deals" });
+    }
+  });
+
+  app.post("/api/admin/deals", async (req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) throw new Error("Database not connected");
+      const data = req.body;
+      if (data.items) data.items = JSON.stringify(data.items);
+      await db.insert(deals).values(data);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to create deal" });
+    }
+  });
+
+  app.put("/api/admin/deals/:id", async (req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) throw new Error("Database not connected");
+      const id = parseInt(req.params.id);
+      const data = req.body;
+      if (data.items) data.items = JSON.stringify(data.items);
+      await db.update(deals).set(data).where(eq(deals.id, id));
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update deal" });
+    }
+  });
+
+  app.delete("/api/admin/deals/:id", async (req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) throw new Error("Database not connected");
+      const id = parseInt(req.params.id);
+      await db.delete(deals).where(eq(deals.id, id));
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to delete deal" });
+    }
+  });
+
+  // Admin Stats
+  app.get("/api/admin/stats", async (_req: Request, res: Response) => {
+    try {
+      const db = await getDb();
+      if (!db) return res.json({});
+
+      const now = new Date();
+      const todayStart = new Date(now.setHours(0, 0, 0, 0));
+      const weekStart = new Date(now.setDate(now.getDate() - 7));
+      const monthStart = new Date(now.setMonth(now.getMonth() - 1));
+
+      const [totalStats] = await db.select({ 
+        orders: count(), 
+        revenue: sum(sql`CAST(${orders.total} AS DECIMAL(10,2))`) 
+      }).from(orders);
+
+      const [todayStats] = await db.select({ 
+        orders: count(), 
+        revenue: sum(sql`CAST(${orders.total} AS DECIMAL(10,2))`) 
+      }).from(orders).where(gte(orders.createdAt, todayStart));
+
+      const [weekStats] = await db.select({ 
+        orders: count(), 
+        revenue: sum(sql`CAST(${orders.total} AS DECIMAL(10,2))`) 
+      }).from(orders).where(gte(orders.createdAt, weekStart));
+
+      const [monthStats] = await db.select({ 
+        orders: count(), 
+        revenue: sum(sql`CAST(${orders.total} AS DECIMAL(10,2))`) 
+      }).from(orders).where(gte(orders.createdAt, monthStart));
+
+      const [pendingCount] = await db.select({ cnt: count() }).from(orders).where(eq(orders.status, "pending"));
+
+      const statusBreakdown = await db.select({ status: orders.status, cnt: count() }).from(orders).groupBy(orders.status);
+      const statusCounts: Record<string, number> = {};
+      statusBreakdown.forEach(s => statusCounts[s.status] = Number(s.cnt));
+
+      const topItems = await db.select({ 
+        name: orderItems.name, 
+        quantity: sum(orderItems.quantity),
+        revenue: sum(sql`CAST(${orderItems.totalPrice} AS DECIMAL(10,2))`)
+      }).from(orderItems).groupBy(orderItems.name).orderBy(desc(sum(orderItems.quantity))).limit(5);
+
+      res.json({
+        total: { orders: Number(totalStats.orders), revenue: Number(totalStats.revenue || 0) },
+        today: { orders: Number(todayStats.orders), revenue: Number(todayStats.revenue || 0) },
+        week: { orders: Number(weekStats.orders), revenue: Number(weekStats.revenue || 0) },
+        month: { orders: Number(monthStats.orders), revenue: Number(monthStats.revenue || 0) },
+        pendingOrders: Number(pendingCount.cnt),
+        statusCounts,
+        topItems: topItems.map(i => ({ name: i.name, quantity: Number(i.quantity), revenue: Number(i.revenue || 0) }))
+      });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Failed to fetch stats" });
     }
   });
 
